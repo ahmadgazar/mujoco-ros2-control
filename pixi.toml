@@ -1,0 +1,43 @@
+[project]
+name = "ik-mujco-ros2"
+channels = ["robostack-staging", "robostack", "conda-forge"]
+platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
+
+# Use Python from conda but ROS 2 (colcon/rclpy) from RoboStack
+[dependencies]
+python = "3.10.*"
+pip = "*"
+git = "*"
+cmake = "*"
+make = "*"
+pkg-config = "*"
+# ROS 2 (via RoboStack)
+ros-humble-ros-base = "*"
+ros-humble-rmw-cyclonedds-cpp = "*"
+colcon-common-extensions = "*"
+rosdep = "*"
+
+[pypi-dependencies]
+# Python-layer deps for this repo
+numpy = ">=1.20.0"
+scipy = ">=1.7.0"
+mujoco = ">=3.0.0"
+mink = "*"
+robot-descriptions = ">=1.8.0"
+GitPython = "*"
+tqdm = "*"
+
+[tasks]
+# Open an interactive shell in the Pixi environment
+shell.cmd = "bash -lc 'exec bash'"
+
+# Build the ROS 2 workspace using RoboStack ROS inside the Pixi environment
+build.cmd = "bash -lc 'source $CONDA_PREFIX/setup.bash && cd ros2_ws && colcon build --symlink-install'"
+
+# Show overlay sourcing commands for convenience (RoboStack ROS)
+env.cmd = "bash -lc 'echo source $CONDA_PREFIX/setup.bash; echo source $PWD/ros2_ws/install/setup.bash'"
+
+# Launch the full teleop -> IK -> impedance -> MuJoCo pipeline (headless)
+launch.cmd = "bash -lc 'export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; source $CONDA_PREFIX/setup.bash && source ros2_ws/install/setup.bash && ros2 launch teleop_pipeline teleop_mujoco.launch.py'"
+
+
