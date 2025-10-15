@@ -288,6 +288,28 @@ If robot model loading fails:
 rm -rf ~/.cache/robot_descriptions
 ```
 
+### Node Crashes with Exit Code 1
+
+If `mink_ik_node` crashes with exit code 1 and you see Git-related errors about "index.lock", this indicates a stale Git lock file in the robot_descriptions cache:
+
+**Error symptoms:**
+```
+[ERROR] [mink_ik_node-2]: process has died [pid XXXXX, exit code 1, cmd '...']
+fatal: Unable to create '/home/user/.cache/robot_descriptions/mujoco_menagerie-main/mujoco_menagerie/.git/index.lock': File exists.
+Another git process seems to be running in this repository...
+```
+
+**Solution:**
+```bash
+# Remove the stale Git lock file
+rm -f ~/.cache/robot_descriptions/mujoco_menagerie-main/mujoco_menagerie/.git/index.lock
+
+# Or clear the entire cache if the issue persists
+rm -rf ~/.cache/robot_descriptions
+```
+
+This typically happens when a previous Git operation in the robot_descriptions cache was interrupted, leaving behind a lock file that prevents subsequent operations.
+
 ## Development
 
 ### Project Structure
