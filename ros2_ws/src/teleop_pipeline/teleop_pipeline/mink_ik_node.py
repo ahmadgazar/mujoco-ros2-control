@@ -34,6 +34,16 @@ class MinkIKNode(Node):
                 mjcf_path = panda_mj_description.MJCF_PATH
             except Exception as e:
                 self.get_logger().error(f"Failed to load robot_descriptions: {e}")
+                
+                # Check for common Git lock file issue and provide helpful guidance
+                if "index.lock" in str(e) or "Another git process seems to be running" in str(e):
+                    self.get_logger().error(
+                        "Git lock file detected. Try running: "
+                        "rm -f ~/.cache/robot_descriptions/*/mujoco_menagerie/.git/index.lock"
+                    )
+                
+                self.get_logger().error("Falling back to manual MJCF path specification required.")
+                self.get_logger().error("Set 'mjcf_path' parameter or fix robot_descriptions cache.")
                 raise
 
         self.m = mujoco.MjModel.from_xml_path(mjcf_path)
