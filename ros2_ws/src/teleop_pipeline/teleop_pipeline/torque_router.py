@@ -20,11 +20,43 @@ class TorqueRouter(Node):
     
     def forward_torques(self, msg: JointState):
         """Forward torques to simulator."""
-        self.pub_cmd.publish(msg)
+        try:
+            # Create a clean message to avoid serialization issues
+            clean_msg = JointState()
+            clean_msg.header.stamp = msg.header.stamp
+            clean_msg.header.frame_id = str(msg.header.frame_id) if msg.header.frame_id else ''
+            
+            # Ensure names are proper strings
+            clean_msg.name = [str(name) for name in msg.name if name]
+            
+            # Copy data arrays safely
+            clean_msg.position = list(msg.position) if msg.position else []
+            clean_msg.velocity = list(msg.velocity) if msg.velocity else []
+            clean_msg.effort = list(msg.effort) if msg.effort else []
+            
+            self.pub_cmd.publish(clean_msg)
+        except Exception as e:
+            self.get_logger().error(f"Error forwarding torques: {e}")
     
     def forward_state(self, msg: JointState):
         """Forward joint states to controller."""
-        self.pub_state.publish(msg)
+        try:
+            # Create a clean message to avoid serialization issues
+            clean_msg = JointState()
+            clean_msg.header.stamp = msg.header.stamp
+            clean_msg.header.frame_id = str(msg.header.frame_id) if msg.header.frame_id else ''
+            
+            # Ensure names are proper strings
+            clean_msg.name = [str(name) for name in msg.name if name]
+            
+            # Copy data arrays safely
+            clean_msg.position = list(msg.position) if msg.position else []
+            clean_msg.velocity = list(msg.velocity) if msg.velocity else []
+            clean_msg.effort = list(msg.effort) if msg.effort else []
+            
+            self.pub_state.publish(clean_msg)
+        except Exception as e:
+            self.get_logger().error(f"Error forwarding state: {e}")
 
 
 def main():

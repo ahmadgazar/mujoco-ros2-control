@@ -3,6 +3,7 @@
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy
 from geometry_msgs.msg import PoseStamped
 
 
@@ -14,12 +15,46 @@ class PoseTargetPub(Node):
         
         self.declare_parameter('position', [0.5, 0.0, 0.4])
         self.declare_parameter('orientation_xyzw', [0.0, 0.0, 0.0, 1.0])
+        self.declare_parameter('startup_delay', 2.0)  # Delay before publishing (seconds)
         
-        self.pub = self.create_publisher(PoseStamped, '/teleop/pose_target', 10)
+        # Use volatile QoS to prevent message latching
+        qos = QoSProfile(depth=10, durability=QoSDurabilityPolicy.VOLATILE)
+        self.pub = self.create_publisher(PoseStamped, '/teleop/pose_target', qos)
+        
+        # Wait before starting to publish
+        delay = self.get_parameter('startup_delay').get_parameter_value().double_value
+        self.start_time = self.get_clock().now()
+        self.started = False
+        
+        self.get_logger().info(f"Waiting {delay} seconds before publishing target...")
         self.create_timer(0.01, self.publish_target)
 
     def publish_target(self):
-        """Publish target pose."""
+        """Publish target pose after startup delay."""
+        # Check if we should start publishing
+        delay = self.get_parameter('startup_delay').get_parameter_value().double_value
+        elapsed = (self.get_clock().now() - self.start_time).nanoseconds / 1e9
+        
+        # DEBUG: Log first few calls
+        if not hasattr(self, '_call_count'):
+            self._call_count = 0
+        self._call_count += 1
+        if self._call_count <= 5:
+            self.get_logger().info(f"[DEBUG] publish_target call #{self._call_count}: elapsed={elapsed:.3f}s, delay={delay:.1f}s")
+        
+        if elapsed < delay:
+            # Log countdown every second
+            remaining = delay - elapsed
+            if not hasattr(self, '_last_countdown') or int(remaining) != self._last_countdown:
+                self._last_countdown = int(remaining)
+                if self._last_countdown > 0:
+                    self.get_logger().info(f"Waiting {self._last_countdown}s before publishing target...")
+            return  # Still waiting - DO NOT PUBLISH
+        
+        if not self.started:
+            self.started = True
+            self.get_logger().info("✅✅✅ NOW Publishing target pose! ✅✅✅")
+        
         p = self.get_parameter('position').get_parameter_value().double_array_value
         o = self.get_parameter('orientation_xyzw').get_parameter_value().double_array_value
         
@@ -31,6 +66,11 @@ class PoseTargetPub(Node):
         msg.pose.orientation.z, msg.pose.orientation.w = o[2], o[3]
         
         self.pub.publish(msg)
+        
+        # DEBUG: Log that we actually published
+        if not hasattr(self, '_publish_logged'):
+            self._publish_logged = True
+            self.get_logger().info(f"[DEBUG] Message actually published at elapsed={elapsed:.3f}s")
 
 
 def main():
