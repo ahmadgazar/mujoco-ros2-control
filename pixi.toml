@@ -40,4 +40,13 @@ env.cmd = "bash -lc 'echo source $CONDA_PREFIX/setup.bash; echo source $PWD/ros2
 # Launch the full teleop -> IK -> impedance -> MuJoCo pipeline (headless)
 launch.cmd = "bash -lc 'export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; source $CONDA_PREFIX/setup.bash && source ros2_ws/install/setup.bash && ros2 launch teleop_pipeline teleop_mujoco.launch.py'"
 
+# Launch with integrated MuJoCo viewer (recommended for visualization)
+launch-viewer.cmd = "bash -lc 'export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; export GDK_BACKEND=x11; export __GL_SYNC_TO_VBLANK=0; source $CONDA_PREFIX/setup.bash && source ros2_ws/install/setup.bash && ros2 launch teleop_pipeline teleop_mujoco_viewer.launch.py'"
+
+# Test IK with direct position control (no impedance layer)
+test-ik.cmd = "bash -lc 'export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; export GDK_BACKEND=x11; export __GL_SYNC_TO_VBLANK=0; source $CONDA_PREFIX/setup.bash && source ros2_ws/install/setup.bash && ros2 launch teleop_pipeline teleop_mujoco_ik_only.launch.py'"
+
+# Monitor the pipeline with comprehensive real-time display (shows joint states, commands, and target tracking)
+monitor.cmd = "bash -lc 'export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; source $CONDA_PREFIX/setup.bash && source ros2_ws/install/setup.bash && python3 tests/monitor_pipeline.py'"
+
 
