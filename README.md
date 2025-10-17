@@ -88,6 +88,8 @@ ros2 topic list
 
 ## Architecture
 
+**📖 For detailed architecture documentation, see [ARCHITECTURE.md](ARCHITECTURE.md)**
+
 ### Nodes
 
 #### `pose_target_pub`
@@ -136,7 +138,7 @@ Computes control torques using impedance control law: τ = K(q_d - q) + D(q̇_d 
 - `/ctrl/torques` (JointState): Control torques
 
 #### `torque_router`
-Routes messages between controller and simulator.
+Routes messages between controller and simulator. **Important**: The router serves a critical role in breaking DDS message caching by republishing with fresh timestamps, ensuring downstream nodes always receive current data rather than stale cached messages.
 
 **Subscribes:**
 - `/ctrl/torques` (JointState): Control torques from impedance controller
@@ -144,56 +146,60 @@ Routes messages between controller and simulator.
 
 **Publishes:**
 - `/mujoco/effort_command` (JointState): Torque commands to simulator
-- `/robot/state` (JointState): Joint states to controller
+- `/robot/state` (JointState): Joint states to controller (with fresh timestamps)
 
 #### `mujoco_sim_bridge`
-Runs MuJoCo physics simulation.
+Runs MuJoCo physics simulation with automatic initialization and stabilization.
 
 **Parameters:**
 - `use_robot_descriptions`: Load model from robot_descriptions (default: true)
 - `robot_description_pkg`: Package name (default: 'panda_mj_description')
+- `mjcf_path`: Direct path to MJCF model file (overrides robot_descriptions)
 - `sim_dt`: Simulation timestep in seconds (default: 0.002)
-- `use_viewer`: Enable MuJoCo viewer (default: false)
+- `use_viewer`: Enable MuJoCo integrated viewer (default: false)
+- `control_mode`: 'position' for direct position control or 'torque' for impedance control (default: 'torque')
 
 **Subscribes:**
-- `/mujoco/effort_command` (JointState): Control torques
+- `/mujoco/effort_command` (JointState): Control torques (torque mode)
+- `/ctrl/q_ref` (JointState): Position commands (position mode)
 
 **Publishes:**
-- `/mujoco/joint_states` (JointState): Current joint states
+- `/mujoco/joint_states` (JointState): Current joint states (routed via `torque_router`)
 
 ### Topic Graph
 
 ```
-                    ┌─────────────────┐
-                    │ pose_target_pub │
-                    └────────┬────────┘
-                             │ /teleop/pose_target
-                             ▼
-                    ┌─────────────────┐
-            ┌──────►│  mink_ik_node   │
-            │       └────────┬────────┘
-            │                │ /ctrl/q_ref
-            │                ▼
-            │       ┌─────────────────┐
-            │  ┌───►│ impedance_node  │
-            │  │    └────────┬────────┘
-            │  │             │ /ctrl/torques
-            │  │             ▼
-            │  │    ┌─────────────────┐
-            │  │    │  torque_router  │◄──┐
-            │  │    └────────┬────────┘   │
-            │  │             │ /mujoco/effort_command
-            │  │             ▼              │
-            │  │    ┌──────────────────┐   │
-            │  │    │ mujoco_sim_bridge│   │
-            │  │    └────────┬─────────┘   │
-            │  │             │ /mujoco/joint_states
-            │  │             └──────────────┘
-            │  │             │
-            │  └─────────────┴── /robot/state
-            │                │
-            └────────────────┘
+                       ┌─────────────────┐
+                       │ pose_target_pub │
+                       └────────┬────────┘
+                                │ /teleop/pose_target
+                                ▼
+                  ┌─────────────────────┐
+                  │   mink_ik_node      │◄─────────┐
+                  └──────────┬──────────┘          │
+                             │ /ctrl/q_ref         │
+                             ▼                     │
+                  ┌─────────────────────┐          │
+                  │  impedance_node     │◄─────┐   │
+                  └──────────┬──────────┘      │   │
+                             │ /ctrl/torques   │   │
+                             ▼                 │   │
+                  ┌─────────────────────┐      │   │
+                  │  torque_router      │      │   │
+                  │  (Cache Breaker)    │      │   │
+                  └──────┬──────────┬───┘      │   │
+                         │          │          │   │
+   /mujoco/effort_command│          │ /robot/state │
+                         ▼          └──────────┴───┘
+                  ┌──────────────────┐
+                  │ mujoco_sim_bridge│
+                  └──────────┬───────┘
+                             │ /mujoco/joint_states
+                             └────────► (to router)
 ```
+
+**Feedback Loop**: `sim → /mujoco/joint_states → router → /robot/state → IK/impedance`  
+**Command Path**: `IK → /ctrl/q_ref → impedance → /ctrl/torques → router → /mujoco/effort_command → sim`
 
 ## Configuration
 
@@ -235,9 +241,12 @@ Node(
 Convenient task commands defined in `pixi.toml`:
 
 ```bash
-pixi run build         # Build ROS 2 workspace
-pixi run launch        # Launch full pipeline
-pixi run shell         # Open shell in Pixi environment
+pixi run build            # Build ROS 2 workspace
+pixi run launch           # Launch full pipeline (torque control with impedance)
+pixi run launch-viewer    # Launch with integrated MuJoCo viewer
+pixi run test-ik          # Test IK with direct position control (no impedance)
+pixi run monitor          # Monitor pipeline with real-time display
+pixi run shell            # Open shell in Pixi environment
 ```
 
 To run individual nodes for debugging:
@@ -262,8 +271,11 @@ ros2 run teleop_pipeline mink_ik_node
 ### Build Errors
 
 ```bash
-# Clean build
-rm -rf ros2_ws/build ros2_ws/install ros2_ws/log
+# Full clean build (removes Python bytecode cache too)
+cd ros2_ws
+rm -rf build install log
+find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+cd ..
 pixi run build
 ```
 
@@ -278,7 +290,17 @@ ros2 topic info /ctrl/torques
 
 # Monitor topic rates
 ros2 topic hz /mujoco/joint_states
+
+# Check message flow
+ros2 topic echo /robot/state --once
 ```
+
+### DDS Cache Issues
+
+If you experience inconsistent robot behavior (robot starting immediately or not responding):
+- The `torque_router` node is **required** to break DDS message caching
+- Ensure router is running: `ros2 node list | grep router`
+- Clean Python cache as shown above before rebuilding
 
 ### Cache Issues
 

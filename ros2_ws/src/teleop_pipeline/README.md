@@ -5,23 +5,26 @@ ROS 2 package implementing a teleoperation control pipeline with MINK inverse ki
 ## Nodes
 
 ### Core Nodes
-- **pose_target_pub**: Target pose publisher
-- **mink_ik_node**: MINK differential IK solver
+- **pose_target_pub**: Target pose publisher with configurable startup delay
+- **mink_ik_node**: MINK differential IK solver with safety checks
 - **impedance_node**: Joint-space impedance controller  
-- **torque_router**: Message router
-- **mujoco_sim_bridge**: MuJoCo physics simulator
+- **torque_router**: Message router (breaks DDS caching, required for consistent behavior)
+- **mujoco_sim_bridge**: MuJoCo physics simulator with integrated viewer support
 
 ### Optional
-- **mujoco_visualizer**: Standalone visualization node (macOS incompatible with ROS 2)
+- **mujoco_visualizer**: Standalone visualization node (deprecated, use integrated viewer)
 
 ## Quick Start
 
 ```bash
-# Build
-colcon build --symlink-install
+# Build (use pixi for proper environment)
+pixi run build
 
-# Launch
-ros2 launch teleop_pipeline teleop_mujoco.launch.py
+# Launch with torque control (full impedance pipeline)
+pixi run launch-viewer
+
+# OR launch with direct position control (IK only, faster)
+pixi run test-ik
 ```
 
 ## Configuration
@@ -37,11 +40,13 @@ Edit `launch/teleop_mujoco.launch.py` to:
 | Topic | Type | Description |
 |-------|------|-------------|
 | `/teleop/pose_target` | PoseStamped | Target end-effector pose |
-| `/ctrl/q_ref` | JointState | Desired joint positions |
-| `/ctrl/torques` | JointState | Control torques |
-| `/mujoco/joint_states` | JointState | Simulation state |
+| `/ctrl/q_ref` | JointState | Desired joint positions from IK |
+| `/ctrl/torques` | JointState | Control torques from impedance controller |
+| `/mujoco/joint_states` | JointState | Raw simulation state (internal) |
 | `/mujoco/effort_command` | JointState | Torque commands to simulator |
-| `/robot/state` | JointState | Current robot state |
+| `/robot/state` | JointState | Current robot state (via router, cache-free) |
+
+**Note**: `/robot/state` is republished by `torque_router` from `/mujoco/joint_states` with fresh timestamps to prevent DDS caching issues.
 
 ## See Also
 
