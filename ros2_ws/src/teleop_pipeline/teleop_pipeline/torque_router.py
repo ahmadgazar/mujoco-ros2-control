@@ -41,20 +41,27 @@ class TorqueRouter(Node):
     def forward_state(self, msg: JointState):
         """Forward joint states to controller."""
         try:
-            # Create a clean message to avoid serialization issues
+            # Create a completely fresh message to break DDS cache
             clean_msg = JointState()
-            clean_msg.header.stamp = msg.header.stamp
-            clean_msg.header.frame_id = str(msg.header.frame_id) if msg.header.frame_id else ''
+            clean_msg.header.stamp = self.get_clock().now().to_msg()  # Use router's own timestamp
+            clean_msg.header.frame_id = ''  # Always empty string for proper serialization
             
-            # Ensure names are proper strings
-            clean_msg.name = [str(name) for name in msg.name if name]
+            # Ensure names are proper strings and synchronized with data length
+            names = [str(name) for name in msg.name if name]
+            pos_len = len(msg.position) if msg.position else 0
+            vel_len = len(msg.velocity) if msg.velocity else 0
+            eff_len = len(msg.effort) if msg.effort else 0
             
-            # Copy data arrays safely
-            clean_msg.position = list(msg.position) if msg.position else []
-            clean_msg.velocity = list(msg.velocity) if msg.velocity else []
-            clean_msg.effort = list(msg.effort) if msg.effort else []
+            # Use minimum length to ensure arrays match
+            data_len = min(len(names), pos_len, vel_len, eff_len) if names else 0
             
-            self.pub_state.publish(clean_msg)
+            if data_len > 0:
+                clean_msg.name = names[:data_len]
+                clean_msg.position = list(msg.position[:data_len])
+                clean_msg.velocity = list(msg.velocity[:data_len])
+                clean_msg.effort = list(msg.effort[:data_len])
+            
+                self.pub_state.publish(clean_msg)
         except Exception as e:
             self.get_logger().error(f"Error forwarding state: {e}")
 

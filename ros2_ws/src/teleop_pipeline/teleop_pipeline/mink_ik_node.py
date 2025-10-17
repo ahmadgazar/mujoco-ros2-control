@@ -90,18 +90,27 @@ class MinkIKNode(Node):
         self.current_q = None    # Actual joint positions from simulator/robot (only updated when state feedback arrives)
         self.is_at_home = False  # Flag to track if robot is at home position
         
-        # Logging flags to avoid spam
-        self._logged_waiting_target = False
-        self._logged_waiting_state = False
-        self._logged_waiting_home = False
+        # Track startup time to ignore stale targets
+        self.startup_time = self.get_clock().now()
+        self.min_startup_duration_sec = 7.5  # Ignore targets for first 7.5 seconds
 
         self.create_subscription(PoseStamped, '/teleop/pose_target', self.on_target, 10)
-        self.create_subscription(JointState, '/robot/state', self.on_state, 200)
+        self.create_subscription(JointState, '/robot/state', self.on_state, 200)  # Via router from /mujoco/joint_states
+        self.get_logger().info("Subscribed to /robot/state for state feedback")
         self.pub = self.create_publisher(JointState, '/ctrl/q_ref', 10)
         self.create_timer(float(self.get_parameter('ik_dt').value), self.solve_ik)
 
     def on_target(self, msg: PoseStamped):
         """Set IK target from pose message."""
+        # Safety: Ignore targets received too soon after startup (may be stale from DDS cache)
+        elapsed_startup = (self.get_clock().now() - self.startup_time).nanoseconds / 1e9
+        if elapsed_startup < self.min_startup_duration_sec:
+            return
+        
+        # Safety: Ignore targets until robot is verified at home position
+        if not self.is_at_home:
+            return
+        
         pos = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z])
         quat = np.array([
             msg.pose.orientation.x, msg.pose.orientation.y,
@@ -111,57 +120,53 @@ class MinkIKNode(Node):
         transform = mink.SE3.from_rotation_and_translation(mink.SO3.from_matrix(rot), pos)
         self.tasks[0].set_target(transform)
         
-        # Log only first target received
+        # Log first target accepted
         if not hasattr(self, '_target_received'):
             self._target_received = True
-            self.get_logger().info(f"Target pose received: {pos}")
+            self.get_logger().info(f"Target pose accepted: {pos}")
     
     def on_state(self, msg: JointState):
-        """Receive actual joint states from simulator/robot."""
+        """Receive actual joint states from simulator/robot (via router for cache-free data)."""
         if msg.position:
-            # Log first state received
-            if self.current_q is None:
-                self.get_logger().info("✓ Robot state feedback connected")
+            # Count messages and wait for stabilization
+            if not hasattr(self, '_state_msg_count'):
+                self._state_msg_count = 0
+                self.get_logger().info("Robot state feedback connected")
+            self._state_msg_count += 1
             
             self.current_q = np.array(msg.position)
+            
+            # Wait for sim to stabilize (~0.1 second)
+            if self._state_msg_count < 50:
+                return
             
             # Check if robot is at home position (within tolerance)
             if not self.is_at_home and len(self.current_q) >= 7:
                 pos_error = np.linalg.norm(self.current_q[:7] - self.home_q)
                 
-                if pos_error < 0.05:  # 0.05 rad (~2.8 degrees) tolerance
+                # Use 0.10 rad (~5.7 deg) tolerance for simulation settling
+                if pos_error < 0.10:
                     self.is_at_home = True
-                    self.get_logger().info(f"✓ Robot at home position! (error: {pos_error:.4f} rad)")
-                    self.get_logger().info("✓✓✓ All conditions met - IK ready to start! ✓✓✓")
+                    self.get_logger().info(f"Robot at home position (error: {pos_error:.4f} rad)")
+                elif self._state_msg_count % 100 == 0:
+                    self.get_logger().warn(f"Waiting for robot at home (error: {pos_error:.4f} rad)")
 
     def solve_ik(self):
-        """Solve IK and publish joint references (following official mink example pattern)."""
-        # Safety check 1: Wait for target pose
+        """Solve IK and publish joint references."""
+        # Safety checks before solving IK
         if self.tasks[0].transform_target_to_world is None:
-            if not self._logged_waiting_target:
-                self.get_logger().warn("⏳ Waiting for target pose... (/teleop/pose_target)")
-                self._logged_waiting_target = True
-            return
+            return  # No target yet
         
-        # Safety check 2: Wait for actual robot state before solving IK!
         if self.current_q is None:
-            if not self._logged_waiting_state:
-                self.get_logger().warn("⏳ Waiting for robot state feedback... (/robot/state)")
-                self._logged_waiting_state = True
-            return
+            return  # No state feedback yet
         
-        # Safety check 3: Wait until robot is at home position before starting IK!
         if not self.is_at_home:
-            if not self._logged_waiting_home:
-                home_error = np.linalg.norm(self.current_q[:7] - self.home_q)
-                self.get_logger().warn(f"⏳ Waiting for robot to reach home position... (current error: {home_error:.4f} rad, threshold: 0.05 rad)")
-                self._logged_waiting_home = True
-            return
+            return  # Robot not at home yet
         
-        # Log when IK actually starts solving (only once)
+        # Log when IK starts (once)
         if not hasattr(self, '_ik_started'):
             self._ik_started = True
-            self.get_logger().info("🚀 IK solver started - publishing position commands!")
+            self.get_logger().info("IK solver started")
         
         # Update configuration from actual joint positions
         self.conf.update(self.current_q)
@@ -182,9 +187,11 @@ class MinkIKNode(Node):
         
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.name = self.joint_names
+        msg.header.frame_id = ''  # Empty string must be explicitly set for proper serialization
+        msg.name = [str(name) for name in self.joint_names]  # Ensure proper string types
         msg.position = q_d[:len(self.joint_names)].tolist()
         msg.velocity = vel[:len(self.joint_names)].tolist()
+        
         self.pub.publish(msg)
 
 

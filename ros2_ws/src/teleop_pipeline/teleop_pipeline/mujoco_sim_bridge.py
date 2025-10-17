@@ -41,30 +41,21 @@ class MuJoCoSimBridge(Node):
         # Initialize simulation properly to prevent instabilities
         mujoco.mj_resetData(self.m, self.d)
         
-        # Load home keyframe if available (using proper method)
+        # Load home keyframe if available
         if self.m.nkey > 0:
             home_key_id = self.m.key("home").id
             mujoco.mj_resetDataKeyframe(self.m, self.d, home_key_id)
-            
-            # CRITICAL: mj_resetDataKeyframe sets qpos/qvel but NOT ctrl
-            # Explicitly copy ctrl from keyframe to hold position with gravity
-            self.d.ctrl[:] = self.m.key_ctrl[home_key_id]
-            
-            self.get_logger().info(f"✅ Loaded 'home' keyframe as initial configuration")
-            self.get_logger().info(f"Initial joint positions (deg): {np.rad2deg(self.d.qpos[:7])}")
-            self.get_logger().info(f"Initial ctrl (deg): {np.rad2deg(self.d.ctrl[:7])}")
+            self.d.ctrl[:] = self.m.key_ctrl[home_key_id]  # Initialize control
+            self.get_logger().info(f"Loaded 'home' keyframe as initial configuration")
         else:
-            self.get_logger().warn(f"No keyframes in model! Loaded from: {mjcf_path}")
+            self.get_logger().warn(f"No keyframes in model from: {mjcf_path}")
         
         mujoco.mj_forward(self.m, self.d)
         
-        # Stabilize simulation with a few forward passes
+        # Stabilize simulation
         for _ in range(10):
             mujoco.mj_step1(self.m, self.d)
             mujoco.mj_step2(self.m, self.d)
-        
-        # Log position after stabilization
-        self.get_logger().info(f"Stabilized at: {np.rad2deg(self.d.qpos[:7])} deg")
         
         self.joint_names = [
             self.m.joint(i).name for i in range(self.m.njnt)
@@ -78,9 +69,13 @@ class MuJoCoSimBridge(Node):
         # Store initial ctrl values to maintain during startup
         self.desired_ctrl = self.d.ctrl.copy()
         
-        # Publish to both topics for compatibility
+        # Flag to prevent publishing before initialization is complete
+        self.initialized = False
+        self._init_steps = 0
+        
+        # Publish to MuJoCo's own topic - router will forward to /robot/state
         self.pub_state = self.create_publisher(JointState, '/mujoco/joint_states', 10)
-        self.pub_robot_state = self.create_publisher(JointState, '/robot/state', 10)
+        self.get_logger().info("Publishing joint states to /mujoco/joint_states")
         
         # Subscribe to appropriate command topic based on control mode
         if self.control_mode == 'position':
@@ -92,6 +87,12 @@ class MuJoCoSimBridge(Node):
         
         dt = float(self.get_parameter('sim_dt').value)
         self.m.opt.timestep = dt
+        
+        # Additional stabilization before starting timer
+        for _ in range(30):
+            mujoco.mj_step(self.m, self.d)
+        self.initialized = True
+        
         self.create_timer(dt, self.sim_step)
         
         # Initialize threading resources BEFORE starting viewer thread
@@ -219,16 +220,9 @@ class MuJoCoSimBridge(Node):
     def on_position_cmd(self, msg: JointState):
         """Receive position commands from IK (position control mode)."""
         if msg.position and len(msg.position) > 0:
-            with self.data_lock:  # Protect against viewer access
-                # For position control, update desired ctrl from IK output
+            with self.data_lock:
                 n = min(len(msg.position), self.m.nu)
-                old_ctrl = self.desired_ctrl[:7].copy()
                 self.desired_ctrl[:n] = msg.position[:n]
-                
-                # Log first command received
-                if not hasattr(self, '_first_ik_logged'):
-                    self._first_ik_logged = True
-                    self.get_logger().info("Receiving position commands from IK")
     
     def on_effort_cmd(self, msg: JointState):
         """Receive torque commands (torque control mode)."""
@@ -251,32 +245,33 @@ class MuJoCoSimBridge(Node):
                 
                 mujoco.mj_step(self.m, self.d)
             
+            # Wait for initialization before publishing
+            if not self.initialized:
+                self._init_steps += 1
+                if self._init_steps >= 20:
+                    self.initialized = True
+                return
+            
             # Only create and publish if there are subscribers (avoid serialization warnings)
-            if self.pub_state.get_subscription_count() > 0 or self.pub_robot_state.get_subscription_count() > 0:
+            if self.pub_state.get_subscription_count() > 0:
                 # Create message with safe data copy
                 js = JointState()
                 js.header.stamp = self.get_clock().now().to_msg()
                 js.header.frame_id = ''  # Explicitly set empty frame_id to avoid serialization issues
                 
-                # Ensure joint names are properly formatted strings
-                js.name = [str(name) for name in self.joint_names if name]
-                
-                # Safely copy joint data with bounds checking
-                n_joints = len(self.joint_names)
-                if n_joints > 0:
-                    with self.data_lock:
-                        # Ensure we don't exceed array bounds
-                        pos_len = min(n_joints, len(self.d.qpos))
-                        vel_len = min(n_joints, len(self.d.qvel))
-                        eff_len = min(n_joints, len(self.d.qfrc_actuator))
-                        
-                        js.position = self.d.qpos[:pos_len].tolist()
-                        js.velocity = self.d.qvel[:vel_len].tolist() 
-                        js.effort = self.d.qfrc_actuator[:eff_len].tolist()
+                with self.data_lock:
+                    # CRITICAL: Ensure names, positions, velocities, efforts all have SAME length
+                    # Use actual qpos/qvel length, not joint_names length (handles mimic joints)
+                    actual_dof = min(len(self.d.qpos), len(self.d.qvel), len(self.joint_names))
+                    
+                    # Trim joint names to match actual DOF
+                    js.name = [str(name) for name in self.joint_names[:actual_dof]]
+                    js.position = self.d.qpos[:actual_dof].tolist()
+                    js.velocity = self.d.qvel[:actual_dof].tolist() 
+                    js.effort = self.d.qfrc_actuator[:actual_dof].tolist()
             
-                # Publish to both topics - IK node needs /robot/state for feedback
+                # Publish to /mujoco/joint_states - router will forward to /robot/state
                 self.pub_state.publish(js)
-                self.pub_robot_state.publish(js)
             
         except Exception as e:
             self.get_logger().error(f"Simulation step error: {e}")

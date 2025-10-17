@@ -31,16 +31,8 @@ class PoseTargetPub(Node):
 
     def publish_target(self):
         """Publish target pose after startup delay."""
-        # Check if we should start publishing
         delay = self.get_parameter('startup_delay').get_parameter_value().double_value
         elapsed = (self.get_clock().now() - self.start_time).nanoseconds / 1e9
-        
-        # DEBUG: Log first few calls
-        if not hasattr(self, '_call_count'):
-            self._call_count = 0
-        self._call_count += 1
-        if self._call_count <= 5:
-            self.get_logger().info(f"[DEBUG] publish_target call #{self._call_count}: elapsed={elapsed:.3f}s, delay={delay:.1f}s")
         
         if elapsed < delay:
             # Log countdown every second
@@ -49,11 +41,11 @@ class PoseTargetPub(Node):
                 self._last_countdown = int(remaining)
                 if self._last_countdown > 0:
                     self.get_logger().info(f"Waiting {self._last_countdown}s before publishing target...")
-            return  # Still waiting - DO NOT PUBLISH
+            return
         
         if not self.started:
             self.started = True
-            self.get_logger().info("✅✅✅ NOW Publishing target pose! ✅✅✅")
+            self.get_logger().info("✅ Now publishing target pose")
         
         p = self.get_parameter('position').get_parameter_value().double_array_value
         o = self.get_parameter('orientation_xyzw').get_parameter_value().double_array_value
@@ -66,11 +58,6 @@ class PoseTargetPub(Node):
         msg.pose.orientation.z, msg.pose.orientation.w = o[2], o[3]
         
         self.pub.publish(msg)
-        
-        # DEBUG: Log that we actually published
-        if not hasattr(self, '_publish_logged'):
-            self._publish_logged = True
-            self.get_logger().info(f"[DEBUG] Message actually published at elapsed={elapsed:.3f}s")
 
 
 def main():

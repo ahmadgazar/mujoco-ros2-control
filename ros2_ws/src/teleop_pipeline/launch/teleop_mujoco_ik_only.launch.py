@@ -40,6 +40,14 @@ def generate_launch_description():
             }]
         ),
         
+        # Router - breaks DDS cache by republishing messages
+        Node(
+            package='teleop_pipeline',
+            executable='torque_router',
+            name='router',
+            output='screen'
+        ),
+        
         # MuJoCo simulation with POSITION CONTROL (no impedance node)
         Node(
             package='teleop_pipeline',
